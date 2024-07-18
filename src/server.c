@@ -10,6 +10,8 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <signal.h>
+#include <stdatomic.h>
 
 // ----- Bstring: growable string declarations ----- //
 
@@ -62,6 +64,7 @@ size_t KNOWN_HTTP_METHODS_LEN =
 
 #define BUFFER_SIZE 1024
 #define MAX_HEADERS 128
+#define MAX_LONG_LEN 21
 
 struct HttpHeader {
   char *key;
@@ -91,6 +94,13 @@ socklen_t client_addr_len = sizeof(client_addr);
 
 struct Bstring *filename = NULL;
 
+volatile atomic_bool keep_running = true;
+
+static void sig_handler(int _)
+{
+    atomic_store(&keep_running, false);
+}
+
 int main(int argc, char **argv) {
   // set base directory of public files (defaults to public)
   if (argc > 2) {
@@ -106,11 +116,15 @@ int main(int argc, char **argv) {
   setbuf(stdout, NULL);
   setbuf(stderr, NULL);
 
+  // Ctrl+C interrupt
+  signal(SIGINT, sig_handler);
+
   server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd == -1) {
     printf("error: Socket creation failed: %s...\n", strerror(errno));
     goto cleanup;
   }
+
 
   // lose the "Address already in use" error message. why this happens
   // in the first place? well even after the server is closed, the port
@@ -142,7 +156,7 @@ int main(int argc, char **argv) {
 
   printf("Waiting for a client to connect...\n");
 
-  while (true) {
+  while (atomic_load(&keep_running)) {
     int conn_fd =
         accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
     if (conn_fd == -1) {
@@ -362,8 +376,8 @@ void *_handle_connection(void *conn_fd_ptr) {
       goto cleanup;
     }
 
-    char file_size_str[21];
-    snprintf(file_size_str, 21, "%ld", file_size);
+    char file_size_str[MAX_LONG_LEN];
+    snprintf(file_size_str, MAX_LONG_LEN, "%ld", file_size);
 
     bstring_append(res, " 200 OK\r\n");
     bstring_append(res, "Content-Type: application/octet-stream\r\n");
@@ -464,6 +478,7 @@ void handle_connection(int conn_fd) {
 
   *conn_fd_ptr = conn_fd;
   pthread_create(&new_thread, NULL, _handle_connection, conn_fd_ptr);
+  pthread_join(new_thread, NULL);
 }
 
 /**
